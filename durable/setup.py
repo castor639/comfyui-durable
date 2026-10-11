@@ -106,7 +106,7 @@ def install():
     import server as comfy_server
     from comfy_execution.cache_provider import register_cache_provider
 
-    from . import steps
+    from . import steps, wanwrapper
     from .cache import DiskCache
     from .controller import Controller, install_queue_hooks
     from .store import JobStore
@@ -129,6 +129,7 @@ def install():
 
     install_queue_hooks(execution.PromptQueue, controller)
     steps.install(journal, controller)
+    controller.late_installs.append(lambda: wanwrapper.install(journal, controller))
     register_cache_provider(cache)
     mark_clean_exit(root)
     watchdog = start_watchdog(root)

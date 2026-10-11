@@ -36,6 +36,7 @@ class Controller:
         self.event_id = 0
         self.lock = threading.Lock()
         self.journal = None
+        self.late_installs = []
 
     def event(self, kind, message, **data):
         with self.lock:
@@ -56,6 +57,11 @@ class Controller:
     # per prompt bookkeeping
 
     def prompt_started(self, prompt_id):
+        while self.late_installs:
+            try:
+                self.late_installs.pop()()
+            except Exception as e:
+                log.warning(f"[durable] adapter failed to install: {e}")
         self.current_prompt = prompt_id
         self.node_hashes = {}
         self.sampler_calls = {}
