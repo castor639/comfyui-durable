@@ -38,10 +38,10 @@ def comfy_pids():
     return pids
 
 
-def start(env=None, log="comfy.log"):
+def start(env=None, log="comfy.log", extra=()):
     e = dict(os.environ, DURABLE_SNAPSHOT_SECONDS="2", **(env or {}))
     f = open(os.path.join(HERE, log), "ab")
-    subprocess.Popen([PY, "main.py", "--port", str(PORT), "--listen", "127.0.0.1"], cwd=COMFY, env=e, stdout=f, stderr=f, start_new_session=True,
+    subprocess.Popen([PY, "main.py", "--port", str(PORT), "--listen", "127.0.0.1", *extra], cwd=COMFY, env=e, stdout=f, stderr=f, start_new_session=True,
                      preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
     wait_ready()
 
