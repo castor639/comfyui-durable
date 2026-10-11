@@ -1,0 +1,11 @@
+[project]
+name = "comfyui-durable"
+description = "Crash-proof ComfyUI queues: jobs survive crashes, OOMs and restarts and pick up from their last sampling step."
+version = "0.1.0"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.comfy]
+DisplayName = "Durable"
+includes = []
