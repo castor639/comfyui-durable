@@ -1,79 +1,127 @@
 # ComfyUI Durable
 
-Your overnight queue survives crashes.
+**When ComfyUI crashes, your work is not lost.**
 
-You queue ten video jobs and go to bed. Somewhere around job four, ComfyUI runs out of system RAM and the process dies. Normally you wake up to a dead terminal, an empty queue, and an hour of sampling thrown away.
+![A ComfyUI job is stopped with kill -9. Durable starts ComfyUI again. The job continues at step 65 of 120 and completes.](docs/kill-test.gif)
 
-With Durable installed, ComfyUI comes back on its own, your queue is put back exactly as it was, and the job that was running picks up from the last sampling step it reached instead of starting over.
+This is a real recording, not an animation. We stop ComfyUI with `kill -9` near step 65 of 120. Durable starts ComfyUI again. The job continues at step 65 and completes. Full video: [docs/kill-test.mp4](docs/kill-test.mp4).
 
-There is nothing to wire up. No new nodes, no changes to your workflows, no new launch script.
+## The problem
+
+You put ten video jobs in the queue. Then you go to sleep.
+
+At job four, ComfyUI uses all the memory and stops.
+
+In the morning, the queue is empty. The job that ran is lost. You must start again.
+
+## What Durable does
+
+- **It starts ComfyUI again.** If ComfyUI stops during a job, Durable starts it again with the same settings.
+- **It puts your queue back.** The jobs go back into the queue in the same order.
+- **It continues the job from the last step.** It does not start the job again at step 1.
+- **It keeps finished work.** If the crash occurs after sampling, ComfyUI does not do the sampling again.
+- **It tries again after an "out of memory" error.** It makes memory free, then it runs the job again.
+- **It gives you a Pause button.** Pause stops the job and makes the GPU memory free. Resume continues the job at the same step.
+
+You do not add nodes. You do not change your workflows. You do not change how you start ComfyUI.
 
 ## Install
 
-Clone into `custom_nodes` and restart ComfyUI:
+1. Open a terminal in your `ComfyUI/custom_nodes` folder.
+2. Run this command:
 
-```bash
-cd ComfyUI/custom_nodes
-git clone https://github.com/castor639/comfyui-durable.git
-```
+   ```bash
+   git clone https://github.com/castor639/comfyui-durable.git
+   ```
 
-You will see `[durable] protecting jobs` in the log, and a small pill in the bottom left of the UI.
+3. Start ComfyUI again.
 
-## What it does
+To make sure that Durable works, look for this line in the ComfyUI log: `[durable] protecting jobs`. You also see a small label in the bottom left corner of the ComfyUI page.
 
-**Saves sampling progress.** While a sampler runs, Durable writes the current latent to disk every few seconds. That is a few MB even for video, so it costs almost nothing. If the job dies at step 34 of 50, the next attempt starts at step 34.
+## What you see
 
-**Keeps finished work.** Outputs of normal nodes (latents, images, masks, text conditioning) are cached on disk, keyed by ComfyUI's own cache key plus the size and modified time of every model file involved. If ComfyUI crashes during VAE decode, the rerun skips sampling entirely and only decodes.
+The label in the bottom left corner shows the status:
 
-**Restarts ComfyUI.** A tiny watchdog process watches ComfyUI. If it dies with jobs still in the queue, the watchdog starts it again with the same command line. If you stop ComfyUI yourself (Ctrl+C, closing it normally), the watchdog stays quiet.
+| Label | Meaning | Button |
+|---|---|---|
+| `Protected: 2 jobs` | Durable keeps a record of 2 jobs. | **Pause** stops the jobs at their current step. |
+| `Paused: 2 jobs` | 2 jobs wait for you. | **Resume** continues the jobs at the step where they stopped. |
+| `Durable` | No jobs are in the queue. | No button. |
 
-**Puts your queue back.** Every queued job is journaled to disk. After a crash the queue is restored in order. After a normal shutdown the jobs are kept as paused, and the Resume button runs them.
+When Durable does something, a message shows in the top right corner. For example: `Resumed sampling at step 65/120 instead of starting over`.
 
-**Retries out of memory errors.** When a node fails with a GPU out of memory error, Durable frees memory and runs the job again, up to two times. Because of the two points above, the retry starts where the failure happened.
+## What occurs in each case
 
-**Pause and resume.** The Pause button saves the running job at its current step, holds the rest of the queue, and frees VRAM. Resume continues from that step, even after a reboot.
+| Event | Result |
+|---|---|
+| ComfyUI stops during a job (crash, `kill -9`, all memory used) | Durable starts ComfyUI again. The queue comes back. The job continues at the last saved step. |
+| ComfyUI stops during VAE decode | The job does not do the sampling again. It does only the decode. In our test, the job completed 7 seconds after the restart. |
+| A node shows a GPU "out of memory" error | Durable makes memory free. Then it runs the job again, a maximum of 2 times. |
+| You click **Pause** | The job stops at its current step. The GPU memory becomes free. |
+| You click **Resume** | The job continues at the step where it stopped. Paused jobs stay paused when you restart ComfyUI. |
+| You stop ComfyUI yourself (Ctrl+C, or a normal `kill`) | Durable does not start ComfyUI again. The next time that you start ComfyUI, your jobs show as paused. Click **Resume** to run them. |
+
+## How Durable does this
+
+- During sampling, Durable saves the current latent to the disk. It does this every 10 seconds (you can change this). The latent is small, a few MB, also for video.
+- Durable saves the outputs of normal nodes to the disk: latents, images, masks and text conditioning. The key for each output includes the ComfyUI cache key, and the size and change time of each model file that the output uses.
+- Durable writes each job in the queue to the disk.
+- A small watchdog process monitors ComfyUI. If ComfyUI stops while jobs are in the queue, the watchdog starts ComfyUI again with the same command line.
+
+## Test results
+
+We ran these tests on an NVIDIA A10G GPU. In each test, we stopped ComfyUI with `kill -9` during sampling. Then we compared the result with a run that had no crash. Both runs used the same seed.
+
+| Sampler | Model | Difference from a run with no crash |
+|---|---|---|
+| `euler` | SD 1.5 | None. The result is bit identical. |
+| `euler_ancestral` | SD 1.5 | None. The result is bit identical. |
+| `dpmpp_2m` | SD 1.5 | 0.08% |
+| `dpmpp_2m_sde` | SD 1.5 | 0.14% |
+| `uni_pc` | Wan 2.1 1.3B video | 1.7%. You cannot see a difference in the frames. |
+| `unipc` in WanVideoWrapper | Wan 2.1 1.3B video | 5.3% (31.8 dB PSNR over all frames). You cannot see a difference in the frames. |
+
+Why some samplers give a small difference:
+
+- Ancestral and SDE samplers add random noise at each step. Durable puts the noise generator back to the same position. Thus the result is exact.
+- Multistep samplers (`dpmpp_2m`, `uni_pc`, `deis` and others) use data from the last steps. Durable does not save this data. Thus the first step after the restart is less accurate, and the result changes a small quantity.
+
+Other test results:
+
+- Crash during VAE decode: the job completed 7 seconds after the restart, because the sampled latent came from the disk.
+- Pause: the GPU memory decreased to 373 MiB. After Resume, the image was bit identical.
+- "Out of memory" error (simulated): Durable ran the job again, and the job completed.
+- Speed: a 20 step SD 1.5 job took 2.01 s with Durable and 2.01 s without Durable. A Wan 2.1 1.3B job (33 frames, 30 steps) took 153 s with Durable and 152 s without Durable.
 
 ## Settings
 
-All optional, set as environment variables before starting ComfyUI.
+All settings are optional. To change a setting, set the environment variable before you start ComfyUI.
 
-| Variable | Default | Meaning |
+| Variable | Default | What it does |
 |---|---|---|
-| `DURABLE_SNAPSHOT_SECONDS` | `10` | Minimum seconds between sampler snapshots |
-| `DURABLE_CACHE_GB` | `20` | Disk cache size limit, oldest entries are dropped first |
-| `DURABLE_CACHE_ENTRY_GB` | `4` | Outputs bigger than this are not cached |
-| `DURABLE_OOM_RETRIES` | `2` | Automatic retries after an out of memory error |
-| `DURABLE_WATCHDOG` | `1` | Set to `0` to turn off automatic restarts |
-| `DURABLE_DISABLE` | unset | Set to `1` to turn everything off |
+| `DURABLE_SNAPSHOT_SECONDS` | `10` | The minimum time in seconds between two saves of the sampler latent. |
+| `DURABLE_CACHE_GB` | `20` | The maximum size of the disk cache. When the cache is full, Durable deletes the oldest outputs first. |
+| `DURABLE_CACHE_ENTRY_GB` | `4` | Durable does not save an output that is larger than this. |
+| `DURABLE_OOM_RETRIES` | `2` | The number of times that Durable runs a job again after an "out of memory" error. |
+| `DURABLE_WATCHDOG` | `1` | Set to `0` to stop the automatic restart of ComfyUI. |
+| `DURABLE_DISABLE` | not set | Set to `1` to stop all functions of Durable. |
 
-State lives in `ComfyUI/user/durable/<port>/`. Deleting that folder resets everything.
+Durable keeps its data in `ComfyUI/user/durable/<port>/`. To delete all Durable data, delete this folder.
 
-## How well resuming works
+## Limits
 
-Measured on an A10G by hard killing ComfyUI (`kill -9`) in the middle of sampling and comparing the finished output against an uninterrupted run with the same seed:
-
-| Sampler | Model | Difference after resume |
-|---|---|---|
-| `euler` | SD 1.5 | none, bit identical |
-| `euler_ancestral` | SD 1.5 | none, bit identical |
-| `dpmpp_2m` | SD 1.5 | 0.08% |
-| `dpmpp_2m_sde` | SD 1.5 | 0.14% |
-| `uni_pc` | Wan 2.1 1.3B video | 1.7%, not visible in the frames |
-| `unipc` in WanVideoWrapper | Wan 2.1 1.3B video | 5.3%, 31.8 dB PSNR over all frames, not visible |
-
-Ancestral and SDE samplers are exact because Durable replays the noise generator to the same position. Multistep samplers (`dpmpp_2m`, `uni_pc`, `deis`, ...) keep a short history of previous steps that is not saved, so the first step after a resume runs at a lower order and the result drifts slightly.
-
-Other checks from the same run: a crash during VAE decode restarted and finished in 7 seconds because the sampled latent came from the disk cache; Pause dropped VRAM to 373 MiB and Resume gave a bit identical image; a simulated out of memory error was retried and the job completed; a 20 step SD 1.5 job took 2.01 s with Durable and 2.01 s without, and a full Wan 2.1 1.3B job (33 frames, 30 steps) took 153 s with Durable against 152 s without.
-
-## Things to know
-
-- When the watchdog restarts ComfyUI it runs in the background, so on Linux and macOS its output goes to `ComfyUI/user/durable/<port>/relaunch.log`. Stop it with `kill <pid>`; a normal kill counts as an intentional stop and does not trigger another restart.
-- Durable hooks ComfyUI's built in sampler path (KSampler, KSamplerAdvanced, SamplerCustom) and the `WanVideoSampler` node from ComfyUI-WanVideoWrapper. For the wrapper it resumes through the node's own `samples` and `start_step` inputs, the same path Wan 2.2 high and low noise workflows use. Context windows, FreeInit, multitalk, partial denoise and the more exotic embed types are left alone and simply restart. Other custom nodes with their own sampling loop are not snapshotted, though their outputs are still cached and their jobs still restored.
-- A sampler is only snapshotted at steps where it reports the state Durable expects. Samplers that do not (for example `dpm_adaptive`) still run normally and simply restart from the beginning after a crash.
-- If you run ComfyUI under systemd, Docker or another supervisor, Durable leaves restarting to that supervisor and only restores the queue.
-- API keys for partner nodes are never written to disk, so restored jobs that use them need the key again.
-- With `--cache-none`, ComfyUI does not compute node cache keys, so snapshots and the disk cache are off.
+- When the watchdog starts ComfyUI again, ComfyUI runs in the background. On Linux and macOS, the ComfyUI output goes to `ComfyUI/user/durable/<port>/relaunch.log`. To stop this ComfyUI, use `kill <pid>`. Durable does not start ComfyUI again after a normal `kill`.
+- Durable continues these sampler nodes at the last saved step:
+  - The ComfyUI sampler nodes: KSampler, KSamplerAdvanced and SamplerCustom.
+  - The `WanVideoSampler` node from ComfyUI-WanVideoWrapper. Durable uses the `samples` and `start_step` inputs of this node. Wan 2.2 high noise and low noise workflows use the same inputs.
+- For WanVideoWrapper, Durable does not continue jobs that use context windows, FreeInit, multitalk, partial denoise or uncommon embed types. These jobs start again at step 1.
+- Other custom nodes that have their own sampling loop start again at step 1. Durable still keeps their outputs and puts their jobs back in the queue.
+- Some samplers do not give the data that Durable needs at each step (for example `dpm_adaptive`). These samplers run normally, but they start again at step 1 after a crash.
+- If systemd, Docker or a different supervisor starts ComfyUI, Durable does not start ComfyUI again. The supervisor does this. Durable only puts the queue back.
+- Durable does not write API keys for partner nodes to the disk. After a restart, jobs that use these keys need the key again.
+- If you start ComfyUI with `--cache-none`, ComfyUI does not make node cache keys. Then Durable does not save sampler steps or node outputs.
+- We did not test Durable on Windows or in the ComfyUI Desktop app.
 
 ## License
 
-GPL-3.0, same as ComfyUI.
+GPL-3.0. This is the same license as ComfyUI.
