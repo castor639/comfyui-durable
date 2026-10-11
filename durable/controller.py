@@ -40,7 +40,7 @@ class Controller:
 
     def event(self, kind, message, **data):
         with self.lock:
-            self.event_id += 1
+            self.event_id = max(self.event_id + 1, time.time_ns() // 1_000_000)
             ev = {"id": self.event_id, "kind": kind, "message": message, "time": time.time(), **data}
             self.events.append(ev)
         log.info(f"[durable] {message}")
