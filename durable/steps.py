@@ -9,6 +9,8 @@ import time
 
 import torch
 
+from .store import replace
+
 log = logging.getLogger("durable")
 
 
@@ -67,7 +69,7 @@ class StepJournal:
     def _write(self, key, data):
         tmp = self.path(key) + ".tmp"
         torch.save(data, tmp)
-        os.replace(tmp, self.path(key))
+        replace(tmp, self.path(key))
 
     def _writer(self):
         while True:

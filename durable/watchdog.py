@@ -67,10 +67,17 @@ def main():
         return
 
     env = dict(os.environ, DURABLE_RELAUNCHED="1")
-    cmd = [sys.executable] + json.loads(a.argv)
+    argv = json.loads(a.argv)
+    if "--disable-auto-launch" not in argv:
+        argv.append("--disable-auto-launch")
+    cmd = [sys.executable] + argv
     log_path = os.path.join(a.root, "relaunch.log")
     if os.name == "nt":
-        proc = subprocess.Popen(cmd, cwd=a.cwd, env=env, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        flags = subprocess.CREATE_NEW_CONSOLE
+        try:
+            proc = subprocess.Popen(cmd, cwd=a.cwd, env=env, creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB)
+        except OSError:
+            proc = subprocess.Popen(cmd, cwd=a.cwd, env=env, creationflags=flags)
         where = "in a new window"
     else:
         log = open(log_path, "ab")

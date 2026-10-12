@@ -36,6 +36,8 @@ def mark_clean_exit(root):
             pass
 
     atexit.register(write)
+    if os.name == "nt":
+        watch_console_close(write)
     for name in ("SIGTERM", "SIGHUP"):
         sig = getattr(signal, name, None)
         if sig is None or signal.getsignal(sig) is not signal.SIG_DFL:
@@ -50,6 +52,33 @@ def mark_clean_exit(root):
             signal.signal(sig, handler)
         except ValueError:
             pass
+
+
+_console_handler = None
+
+
+def watch_console_close(write):
+    import ctypes
+    global _console_handler
+
+    @ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
+    def handler(event):
+        if event in (0, 1, 2, 5, 6):
+            write()
+        return 0
+
+    _console_handler = handler
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(handler, True)
+
+
+def popen_detached(cmd, new_console=False, **kwargs):
+    if os.name != "nt":
+        return subprocess.Popen(cmd, start_new_session=True, **kwargs)
+    base = subprocess.CREATE_NEW_CONSOLE if new_console else subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    try:
+        return subprocess.Popen(cmd, creationflags=base | subprocess.CREATE_BREAKAWAY_FROM_JOB, **kwargs)
+    except OSError:
+        return subprocess.Popen(cmd, creationflags=base, **kwargs)
 
 
 def supervised_elsewhere():
@@ -70,11 +99,8 @@ def start_watchdog(root):
     script = os.path.join(os.path.dirname(__file__), "watchdog.py")
     argv = getattr(sys, "orig_argv", [sys.executable] + sys.argv)[1:]
     cmd = [sys.executable, "-I", script, "--parent", str(os.getpid()), "--root", root, "--cwd", os.getcwd(), "--argv", json.dumps(argv)]
-    if os.name == "nt":
-        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-        proc = subprocess.Popen(cmd, creationflags=flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
-        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True)
+    stderr = subprocess.DEVNULL if os.name == "nt" else None
+    proc = popen_detached(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr)
     write_json(info_path, {"pid": proc.pid, "parent": os.getpid()})
     return True
 

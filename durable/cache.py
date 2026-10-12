@@ -6,6 +6,8 @@ import queue
 import threading
 
 import torch
+
+from .store import replace
 from comfy_api.latest._caching import CacheProvider, CacheValue
 
 log = logging.getLogger("durable")
@@ -124,7 +126,7 @@ class DiskCache(CacheProvider):
         path = self._path(key)
         tmp = f"{path}.{threading.get_ident()}.tmp"
         torch.save({"outputs": outputs}, tmp)
-        os.replace(tmp, path)
+        replace(tmp, path)
         with self.lock:
             self.entries[key] = os.path.getsize(path)
         self._evict()
