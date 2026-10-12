@@ -16,7 +16,7 @@ jobs:
     env:
       COMFY_DIR: ${{ github.workspace }}/ComfyUI
       E2E_SD_STEPS: "40"
-      E2E_SD_SIZE: "256"
+      E2E_SD_SIZE: "128"
       E2E_EXTRA_ARGS: "--cpu"
       PYTHONIOENCODING: utf-8
     steps:
@@ -34,7 +34,7 @@ jobs:
           git clone --depth 1 --branch v0.39.0 https://github.com/comfyanonymous/ComfyUI.git
           grep -v -E '^(torch|torchvision|torchaudio)\b' ComfyUI/requirements.txt > comfy-req.txt
           python -m pip install --upgrade pip
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r comfy-req.txt
           cp -r durable ComfyUI/custom_nodes/comfyui-durable
 

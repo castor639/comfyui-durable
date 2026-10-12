@@ -290,7 +290,10 @@ def test_pause_resume(make=sd, name="pause", at=None):
         time.sleep(0.5)
     paused = s["paused"] >= 1
     time.sleep(3)
-    used = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout.strip()
+    try:
+        used = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout.strip()
+    except FileNotFoundError:
+        used = "no gpu"
     http("/durable/resume", {})
     st = wait_done(pid, until_success=True)
     out = latent(f"{name}_run")
@@ -303,7 +306,7 @@ def test_clean_shutdown_keeps_queue():
     reset_state()
     start()
     a = queue(sd("clean_a", steps=SD_STEPS * 2))
-    b = queue(sd("clean_b", steps=30, seed=9))
+    b = queue(sd("clean_b", steps=SD_STEPS // 2, seed=9))
     wait_snapshot(SD_STEPS // 10)
     stop()
     time.sleep(4)
@@ -333,7 +336,7 @@ def test_close_window():
     e = dict(os.environ, DURABLE_SNAPSHOT_SECONDS="2")
     root = PORTABLE_ROOT or COMFY
     main = os.path.join("ComfyUI", "main.py") if PORTABLE_ROOT else "main.py"
-    proc = subprocess.Popen([PY, "-s", main, "--windows-standalone-build", "--disable-auto-launch", "--port", str(PORT), "--listen", "127.0.0.1"],
+    proc = subprocess.Popen([PY, "-s", main, "--windows-standalone-build", "--disable-auto-launch", "--port", str(PORT), "--listen", "127.0.0.1", *EXTRA_ARGS],
                             cwd=root, env=e, creationflags=subprocess.CREATE_NEW_CONSOLE)
     wait_ready()
     pid = queue(sd("close_a", steps=SD_STEPS * 2))
@@ -362,8 +365,8 @@ def test_oom_retry():
     flag = os.path.join(COMFY, "durable_oom_once")
     open(flag, "w").close()
     start()
-    pid = queue(sd("oom", steps=30, oom_node=True))
-    h = wait_done(pid, timeout=300, until_success=True)
+    pid = queue(sd("oom", steps=SD_STEPS // 2, oom_node=True))
+    h = wait_done(pid, timeout=1800, until_success=True)
     retried = bool(events("retry"))
     record("oom_retry", h.get("completed", False) and retried, retried=retried)
     stop()
