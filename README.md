@@ -44,9 +44,8 @@ Durable adds no new dependencies. It uses only the Python standard library, and 
 
 1. Start a long job in ComfyUI. For example, use a KSampler with 100 steps.
 2. When the job is at approximately the middle, stop the ComfyUI process. On Linux or macOS, run `kill -9 $(pgrep -f 'main\.py( |$)')`.
+   On Windows, open Task Manager. Find the `python.exe` process that uses the most memory, and click **End task**.
 3. Wait approximately 10 seconds. ComfyUI starts again by itself. The page connects again by itself. The job continues at the step where it stopped.
-
-We did not test this on Windows.
 
 ## What you see
 
@@ -70,6 +69,8 @@ When Durable does something, a message shows in the top right corner. For exampl
 | You click **Pause** | The job stops at its current step. The GPU memory becomes free. |
 | You click **Resume** | The job continues at the step where it stopped. Paused jobs stay paused when you restart ComfyUI. |
 | You stop ComfyUI yourself (Ctrl+C, or a normal `kill`) | Durable does not start ComfyUI again. The next time that you start ComfyUI, your jobs show as paused. Click **Resume** to run them. |
+| On Windows, you close the ComfyUI console window | Durable does not start ComfyUI again. The next time that you start ComfyUI, your jobs show as paused. |
+| On Windows, you use **End task** in Task Manager | Windows stops the process in the same way as a crash. If jobs are in the queue, Durable starts ComfyUI again. |
 
 ## How Durable does this
 
@@ -80,7 +81,7 @@ When Durable does something, a message shows in the top right corner. For exampl
 
 ## Test results
 
-We ran these tests on an NVIDIA A10G GPU. In each test, we stopped ComfyUI with `kill -9` during sampling. Then we compared the result with a run that had no crash. Both runs used the same seed.
+We ran these tests on an NVIDIA A10G GPU, on Linux and on Windows (the ComfyUI portable build). In each test, we stopped ComfyUI during sampling: with `kill -9` on Linux, and with **End task** (TerminateProcess) on Windows. Then we compared the result with a run that had no crash. Both runs used the same seed.
 
 | Sampler | Model | Difference from a run with no crash |
 |---|---|---|
@@ -95,6 +96,8 @@ Why some samplers give a small difference:
 
 - Ancestral and SDE samplers add random noise at each step. Durable puts the noise generator back to the same position. Thus the result is exact.
 - Multistep samplers (`dpmpp_2m`, `uni_pc`, `deis` and others) use data from the last steps. Durable does not save this data. Thus the first step after the restart is less accurate, and the result changes a small quantity.
+
+The results on Windows were the same as on Linux: `euler` and `euler_ancestral` were bit identical, `dpmpp_2m` was 0.08%, and Wan `uni_pc` was 1.7%.
 
 Other test results:
 
@@ -120,7 +123,8 @@ Durable keeps its data in `ComfyUI/user/durable/<port>/`. To delete all Durable 
 
 ## Limits
 
-- When the watchdog starts ComfyUI again, ComfyUI runs in the background. On Linux and macOS, the ComfyUI output goes to `ComfyUI/user/durable/<port>/relaunch.log`. To stop this ComfyUI, use `kill <pid>`. Durable does not start ComfyUI again after a normal `kill`.
+- When the watchdog starts ComfyUI again on Linux or macOS, ComfyUI runs in the background. The ComfyUI output goes to `ComfyUI/user/durable/<port>/relaunch.log`. To stop this ComfyUI, use `kill <pid>`. Durable does not start ComfyUI again after a normal `kill`.
+- When the watchdog starts ComfyUI again on Windows, ComfyUI opens in a new console window. The browser does not open a new tab.
 - Durable continues these sampler nodes at the last saved step:
   - The ComfyUI sampler nodes: KSampler, KSamplerAdvanced and SamplerCustom.
   - The `WanVideoSampler` node from ComfyUI-WanVideoWrapper. Durable uses the `samples` and `start_step` inputs of this node. Wan 2.2 high noise and low noise workflows use the same inputs.
@@ -130,7 +134,7 @@ Durable keeps its data in `ComfyUI/user/durable/<port>/`. To delete all Durable 
 - If systemd, Docker or a different supervisor starts ComfyUI, Durable does not start ComfyUI again. The supervisor does this. Durable only puts the queue back.
 - Durable does not write API keys for partner nodes to the disk. After a restart, jobs that use these keys need the key again.
 - If you start ComfyUI with `--cache-none`, ComfyUI does not make node cache keys. Then Durable does not save sampler steps or node outputs.
-- We did not test Durable on Windows or in the ComfyUI Desktop app.
+- We tested Durable on Windows with the ComfyUI portable build (Windows Server 2022, NVIDIA A10G). We did not test the ComfyUI Desktop app.
 
 ## License
 
