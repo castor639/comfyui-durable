@@ -30,7 +30,7 @@ function showEvents(events) {
   for (const ev of events) {
     if (ev.id <= lastSeen) continue;
     lastSeen = ev.id;
-    if (Date.now() / 1000 - ev.time < 600) toast(ev);
+    if (!ev.quiet && Date.now() / 1000 - ev.time < 600) toast(ev);
   }
   sessionStorage.setItem(SEEN_KEY, String(lastSeen));
 }

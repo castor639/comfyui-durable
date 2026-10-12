@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import shutil
 import signal
 import subprocess
@@ -16,7 +15,12 @@ from safetensors.torch import load_file
 HERE = os.path.dirname(os.path.abspath(__file__))
 COMFY = os.path.abspath(os.environ.get("COMFY_DIR", "ComfyUI"))
 PY = sys.executable
+WIN = os.name == "nt"
+PORTABLE_ROOT = os.environ.get("E2E_PORTABLE_ROOT")
 PORT = 8188
+SD_STEPS = int(os.environ.get("E2E_SD_STEPS", 200))
+SD_SIZE = int(os.environ.get("E2E_SD_SIZE", 768))
+EXTRA_ARGS = os.environ.get("E2E_EXTRA_ARGS", "").split()
 URL = f"http://127.0.0.1:{PORT}"
 STATE = os.path.join(COMFY, "user", "durable", str(PORT))
 OUT = os.path.join(COMFY, "output")
@@ -41,9 +45,39 @@ def comfy_pids():
 def start(env=None, log="comfy.log", extra=()):
     e = dict(os.environ, DURABLE_SNAPSHOT_SECONDS="2", **(env or {}))
     f = open(os.path.join(HERE, log), "ab")
-    subprocess.Popen([PY, "main.py", "--port", str(PORT), "--listen", "127.0.0.1", *extra], cwd=COMFY, env=e, stdout=f, stderr=f, start_new_session=True,
-                     preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+    args = ["--port", str(PORT), "--listen", "127.0.0.1", *EXTRA_ARGS, *extra]
+    if PORTABLE_ROOT:
+        cmd, cwd = [PY, "-s", os.path.join("ComfyUI", "main.py"), "--windows-standalone-build", "--disable-auto-launch", *args], PORTABLE_ROOT
+    else:
+        cmd, cwd = [PY, "main.py", *args], COMFY
+    if WIN:
+        subprocess.Popen(cmd, cwd=cwd, env=e, stdout=f, stderr=f, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+    else:
+        subprocess.Popen(cmd, cwd=cwd, env=e, stdout=f, stderr=f, start_new_session=True,
+                         preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
     wait_ready()
+
+
+def hard_kill(pid):
+    try:
+        psutil.Process(pid).kill()
+    except psutil.NoSuchProcess:
+        pass
+
+
+def polite_stop(pid):
+    try:
+        os.kill(pid, signal.CTRL_BREAK_EVENT if WIN else signal.SIGINT)
+    except OSError:
+        pass
+
+
+def events(kind=None):
+    try:
+        evs = http("/durable/status")["events"]
+    except Exception:
+        return []
+    return [e for e in evs if kind is None or e["kind"] == kind]
 
 
 def wait_ready(timeout=300):
@@ -57,14 +91,14 @@ def wait_ready(timeout=300):
     raise RuntimeError("ComfyUI did not come up")
 
 
-def stop(sig=signal.SIGINT):
+def stop():
     for pid in comfy_pids():
-        os.kill(pid, sig)
+        polite_stop(pid)
     t0 = time.time()
     while comfy_pids() and time.time() - t0 < 60:
         time.sleep(0.5)
     for pid in comfy_pids():
-        os.kill(pid, signal.SIGKILL)
+        hard_kill(pid)
     time.sleep(1)
 
 
@@ -133,7 +167,9 @@ def record(name, ok, **info):
     print(json.dumps(RESULTS[-1]), flush=True)
 
 
-def sd(prefix, steps=200, sampler="euler", seed=7, size=768, oom_node=False):
+def sd(prefix, steps=None, sampler="euler", seed=7, size=None, oom_node=False):
+    steps = steps or SD_STEPS
+    size = size or SD_SIZE
     p = {
         "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "v1-5-pruned-emaonly-fp16.safetensors"}},
         "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "a lighthouse on a cliff at dusk, oil painting", "clip": ["4", 1]}},
@@ -200,7 +236,7 @@ def kill_mid_sampling(name, make, kill_at, sampler_label):
     pid = queue(make(f"{name}_run"))
     at = wait_snapshot(kill_at)
     for p in comfy_pids():
-        os.kill(p, signal.SIGKILL)
+        hard_kill(p)
     killed = time.time() - t0
     time.sleep(3)
     relaunched = bool(comfy_pids())
@@ -210,8 +246,7 @@ def kill_mid_sampling(name, make, kill_at, sampler_label):
     out = latent(f"{name}_run")
     diff = (out - ref).abs().max().item()
     rel = ((out - ref).norm() / ref.norm()).item()
-    pattern = re.compile(r"Resumed (WanVideo )?sampling at step")
-    resumed = bool(pattern.search(log_tail()) or pattern.search(open(os.path.join(STATE, "relaunch.log"), errors="ignore").read()))
+    resumed = bool(events("resumed"))
     record(name, relaunched and st.get("completed", False) and resumed, sampler=sampler_label, killed_after_s=round(killed, 1), snapshot_step=at,
            baseline_s=round(base_time, 1), total_with_crash_s=round(total, 1), max_abs_diff=diff, rel_l2_diff=rel, watchdog_relaunched=relaunched, resumed_from_snapshot=resumed)
     stop()
@@ -227,20 +262,20 @@ def test_kill_in_decode():
         time.sleep(0.2)
     time.sleep(1)
     for p in comfy_pids():
-        os.kill(p, signal.SIGKILL)
+        hard_kill(p)
     killed = time.time() - t0
     time.sleep(3)
     wait_ready()
     t1 = time.time()
     st = wait_done(pid)
     after = time.time() - t1
-    relog = open(os.path.join(STATE, "relaunch.log"), errors="ignore").read()
-    hit = "restored KSampler (node 3) from disk cache" in relog
+    hit = any(e.get("class_type") == "KSampler" for e in events("cache_hit"))
     record("kill_during_decode", st.get("completed", False) and hit, killed_after_s=round(killed, 1), finish_after_restart_s=round(after, 1), ksampler_from_disk_cache=hit)
     stop()
 
 
-def test_pause_resume(make=sd, name="pause", at=60):
+def test_pause_resume(make=sd, name="pause", at=None):
+    at = at or SD_STEPS * 3 // 10
     ref, _, _ = baseline(make(f"{name}_ref"), f"{name}_ref")
     reset_state()
     start()
@@ -267,10 +302,10 @@ def test_pause_resume(make=sd, name="pause", at=60):
 def test_clean_shutdown_keeps_queue():
     reset_state()
     start()
-    a = queue(sd("clean_a", steps=400))
+    a = queue(sd("clean_a", steps=SD_STEPS * 2))
     b = queue(sd("clean_b", steps=30, seed=9))
-    wait_snapshot(20)
-    stop(signal.SIGINT)
+    wait_snapshot(SD_STEPS // 10)
+    stop()
     time.sleep(4)
     no_relaunch = not comfy_pids()
     start()
@@ -279,6 +314,43 @@ def test_clean_shutdown_keeps_queue():
     http("/durable/resume", {})
     sa, sb = wait_done(a, until_success=True), wait_done(b, until_success=True)
     record("clean_shutdown_keeps_queue", no_relaunch and kept == 2 and sa.get("completed") and sb.get("completed"), watchdog_stayed_quiet=no_relaunch, kept_as_paused=kept)
+    stop()
+
+
+CLOSE_CONSOLE = """
+import ctypes, sys
+k = ctypes.windll.kernel32
+k.FreeConsole()
+if not k.AttachConsole(int(sys.argv[1])):
+    sys.exit(1)
+hwnd = k.GetConsoleWindow()
+ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+"""
+
+
+def test_close_window():
+    reset_state()
+    e = dict(os.environ, DURABLE_SNAPSHOT_SECONDS="2")
+    root = PORTABLE_ROOT or COMFY
+    main = os.path.join("ComfyUI", "main.py") if PORTABLE_ROOT else "main.py"
+    proc = subprocess.Popen([PY, "-s", main, "--windows-standalone-build", "--disable-auto-launch", "--port", str(PORT), "--listen", "127.0.0.1"],
+                            cwd=root, env=e, creationflags=subprocess.CREATE_NEW_CONSOLE)
+    wait_ready()
+    pid = queue(sd("close_a", steps=SD_STEPS * 2))
+    wait_snapshot(SD_STEPS // 10)
+    closer = subprocess.run([PY, "-c", CLOSE_CONSOLE, str(proc.pid)], creationflags=subprocess.CREATE_NO_WINDOW)
+    t0 = time.time()
+    while comfy_pids() and time.time() - t0 < 30:
+        time.sleep(0.5)
+    exited = not comfy_pids()
+    time.sleep(6)
+    no_relaunch = not comfy_pids()
+    start()
+    kept = http("/durable/status")["paused"]
+    http("/durable/resume", {})
+    st = wait_done(pid, until_success=True)
+    record("close_console_window", exited and no_relaunch and kept == 1 and st.get("completed", False),
+           closer_rc=closer.returncode, exited=exited, watchdog_stayed_quiet=no_relaunch, kept_as_paused=kept)
     stop()
 
 
@@ -292,7 +364,7 @@ def test_oom_retry():
     start()
     pid = queue(sd("oom", steps=30, oom_node=True))
     h = wait_done(pid, timeout=300, until_success=True)
-    retried = "freed memory and retrying" in log_tail()
+    retried = bool(events("retry"))
     record("oom_retry", h.get("completed", False) and retried, retried=retried)
     stop()
     shutil.rmtree(node_dir)
@@ -331,13 +403,13 @@ if __name__ == "__main__":
     for t in tests:
         try:
             if t == "sd_euler":
-                kill_mid_sampling("sd_euler", lambda pre: sd(pre, sampler="euler"), 80, "euler")
+                kill_mid_sampling("sd_euler", lambda pre: sd(pre, sampler="euler"), SD_STEPS * 2 // 5, "euler")
             elif t == "sd_dpmpp2m":
-                kill_mid_sampling("sd_dpmpp2m", lambda pre: sd(pre, sampler="dpmpp_2m"), 80, "dpmpp_2m")
+                kill_mid_sampling("sd_dpmpp2m", lambda pre: sd(pre, sampler="dpmpp_2m"), SD_STEPS * 2 // 5, "dpmpp_2m")
             elif t == "sd_ancestral":
-                kill_mid_sampling("sd_ancestral", lambda pre: sd(pre, sampler="euler_ancestral"), 80, "euler_ancestral")
+                kill_mid_sampling("sd_ancestral", lambda pre: sd(pre, sampler="euler_ancestral"), SD_STEPS * 2 // 5, "euler_ancestral")
             elif t == "sd_sde":
-                kill_mid_sampling("sd_sde", lambda pre: sd(pre, sampler="dpmpp_2m_sde"), 80, "dpmpp_2m_sde")
+                kill_mid_sampling("sd_sde", lambda pre: sd(pre, sampler="dpmpp_2m_sde"), SD_STEPS * 2 // 5, "dpmpp_2m_sde")
             elif t == "wan":
                 kill_mid_sampling("wan_t2v_1_3b", wan, 15, "uni_pc")
             elif t == "wanwrapper":
@@ -350,6 +422,8 @@ if __name__ == "__main__":
                 test_pause_resume()
             elif t == "clean":
                 test_clean_shutdown_keeps_queue()
+            elif t == "close_window":
+                test_close_window()
             elif t == "oom":
                 test_oom_retry()
             elif t == "wan_ab":

@@ -2,7 +2,7 @@ import os
 
 import torch
 
-FLAG = os.path.join(os.getcwd(), "durable_oom_once")
+FLAG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "durable_oom_once")
 
 
 class DurableTestOOM:

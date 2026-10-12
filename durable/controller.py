@@ -38,12 +38,14 @@ class Controller:
         self.journal = None
         self.late_installs = []
 
-    def event(self, kind, message, **data):
+    def event(self, kind, message, quiet=False, **data):
         with self.lock:
             self.event_id = max(self.event_id + 1, time.time_ns() // 1_000_000)
-            ev = {"id": self.event_id, "kind": kind, "message": message, "time": time.time(), **data}
+            ev = {"id": self.event_id, "kind": kind, "message": message, "time": time.time(), "quiet": quiet, **data}
             self.events.append(ev)
         log.info(f"[durable] {message}")
+        if quiet:
+            return
         try:
             self.server.send_sync("durable.event", ev)
         except Exception:
@@ -88,7 +90,7 @@ class Controller:
         self.snapshots.setdefault(prompt_id, set()).add(key)
 
     def note_cache_hit(self, node_id, class_type):
-        log.info(f"[durable] restored {class_type} (node {node_id}) from disk cache")
+        self.event("cache_hit", f"restored {class_type} (node {node_id}) from disk cache", quiet=True, node=node_id, class_type=class_type)
 
     def salt(self, node_id):
         if node_id in self.salts:
