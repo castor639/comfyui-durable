@@ -1,0 +1,71 @@
+name: e2e
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  crash-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      COMFY_DIR: ${{ github.workspace }}/ComfyUI
+      E2E_SD_STEPS: "40"
+      E2E_SD_SIZE: "256"
+      E2E_EXTRA_ARGS: "--cpu"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: durable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Get ComfyUI
+        shell: bash
+        run: |
+          git clone --depth 1 --branch v0.39.0 https://github.com/comfyanonymous/ComfyUI.git
+          grep -v -E '^(torch|torchvision|torchaudio)\b' ComfyUI/requirements.txt > comfy-req.txt
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r comfy-req.txt
+          cp -r durable ComfyUI/custom_nodes/comfyui-durable
+
+      - name: Cache model
+        uses: actions/cache@v4
+        with:
+          path: ComfyUI/models/checkpoints
+          key: sd15-fp16-v1
+
+      - name: Download model
+        shell: bash
+        run: |
+          f=ComfyUI/models/checkpoints/v1-5-pruned-emaonly-fp16.safetensors
+          [ -s "$f" ] || curl -sSL --retry 3 -o "$f" https://huggingface.co/Comfy-Org/stable-diffusion-v1-5-archive/resolve/main/v1-5-pruned-emaonly-fp16.safetensors
+
+      - name: Crash tests
+        shell: bash
+        working-directory: ComfyUI/custom_nodes/comfyui-durable/tests
+        run: |
+          tests="sd_euler sd_ancestral clean pause oom"
+          if [ "$RUNNER_OS" = "Windows" ]; then tests="$tests close_window"; fi
+          python -u e2e.py $tests
+          python - <<'PY'
+          import json, sys
+          results = json.load(open("results.json"))
+          for r in results:
+              print(("PASS " if r["ok"] else "FAIL ") + json.dumps(r))
+          sys.exit(0 if results and all(r["ok"] for r in results) else 1)
+          PY
+
+      - name: Logs on failure
+        if: failure()
+        shell: bash
+        run: tail -n 200 ComfyUI/custom_nodes/comfyui-durable/tests/comfy.log || true
