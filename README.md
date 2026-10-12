@@ -38,6 +38,16 @@ You do not add nodes. You do not change your workflows. You do not change how yo
 
 To make sure that Durable works, look for this line in the ComfyUI log: `[durable] protecting jobs`. You also see a small label in the bottom left corner of the ComfyUI page.
 
+Durable adds no new dependencies. It uses only the Python standard library, and torch, aiohttp and psutil, which ComfyUI already has.
+
+## See it work in 30 seconds
+
+1. Start a long job in ComfyUI. For example, use a KSampler with 100 steps.
+2. When the job is at approximately the middle, stop the ComfyUI process. On Linux or macOS, run `kill -9 $(pgrep -f 'main\.py( |$)')`.
+3. Wait approximately 10 seconds. ComfyUI starts again by itself. The page connects again by itself. The job continues at the step where it stopped.
+
+We did not test this on Windows.
+
 ## What you see
 
 The label in the bottom left corner shows the status:
